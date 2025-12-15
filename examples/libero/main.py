@@ -7,8 +7,6 @@ from pathlib import Path
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
-
-os.environ["PYTHONPATH"] = "/home/ubuntu/Desktop/hld/openpi/third_party/LIBERO-plus"
 root_dir = (project_root / "third_party/LIBERO-plus").resolve()
 sys.path.insert(0, str(root_dir))
 
@@ -59,7 +57,7 @@ class Args:
     #################################################################################################################
     video_out_path: str = f"data/{task_suite_name}/{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"  # Path to save videos
     resume: bool = False  # If True, automatically find and resume from the latest folder for this task suite
-    replay_mode: bool = True  # If True, save successful episodes to HDF5
+    replay_mode: bool = False  # If True, save successful episodes to HDF5
     get_each_seg: bool = False  # If True, save segmentation for each object separately (robot + objects in task description)
     max_retries: int = 20  # Maximum number of retries for failed tasks in replay_mode (0 = no retries)
     seed: int = 7  # Random Seed (for reproducibility)
