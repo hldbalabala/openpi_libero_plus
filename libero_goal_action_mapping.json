@@ -1,0 +1,12 @@
+{
+  "open the middle drawer of the cabinet": "open the middle drawer of the cabinet<cabinet>",
+  "open the top drawer and put the bowl inside": "open the top drawer<cabinet>; pick the bowl<bowl>; place in the top drawer<cabinet>",
+  "push the plate to the front of the stove": "push the plate<plate>; push to the front of the stove<stove>",
+  "put the bowl on the plate": "pick the bowl<bowl>; place on the plate<plate>",
+  "put the bowl on the stove": "pick the bowl<bowl>; place on the stove<stove>",
+  "put the bowl on top of the cabinet": "pick the bowl<bowl>; place on top of the cabinet<cabinet>",
+  "put the cream cheese in the bowl": "pick the cream cheese<cream cheese>; place in the bowl<bowl>",
+  "put the wine bottle on the rack": "pick the wine bottle<wine bottle>; place on the rack<rack>",
+  "put the wine bottle on top of the cabinet": "pick the wine bottle<wine bottle>; place on top of the cabinet<cabinet>",
+  "turn on the stove": "turn on the stove<stove>"
+}
