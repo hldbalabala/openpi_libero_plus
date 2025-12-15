@@ -164,7 +164,7 @@ def eval_libero(args: Args) -> None:
         pending_tasks.append(task_id)
 
     progress_bar = tqdm.tqdm(total=len(pending_tasks), desc="Evaluating tasks")
-    with open("/home/ubuntu/Desktop/hld/openpi/libero_goal_language_mapping.json", "r") as f:
+    with open("tools/libero_goal_language_mapping.json", "r") as f:
         language_mapping = json.load(f)
 
     def _handle_result(res: dict):

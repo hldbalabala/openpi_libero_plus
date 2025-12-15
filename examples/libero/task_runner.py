@@ -55,7 +55,7 @@ def run_single_task(
 
     task_description = task.language
     task_description_new = language_mapping.get(task_description, task_description)
-    with open("/home/ubuntu/Desktop/hld/openpi/libero_goal_action_mapping.json", "r") as f:
+    with open("tools/libero_goal_action_mapping.json", "r") as f:
         action_mapping = json.load(f)
     task_description_new = action_mapping.get(task_description_new, task_description_new)
 
