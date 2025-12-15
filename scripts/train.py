@@ -71,14 +71,56 @@ def init_wandb(config: _config.TrainConfig, *, resuming: bool, log_code: bool = 
 
 
 def _load_weights_and_validate(loader: _weight_loaders.WeightLoader, params_shape: at.Params) -> at.Params:
-    """Loads and validates the weights. Returns a loaded subset of the weights."""
+    """Loads and validates the weights. Returns a loaded subset of the weights.
+    
+    If the loaded weights are missing some parameters (e.g., new layers like image_out_proj),
+    those parameters will be kept from params_shape (randomly initialized).
+    """
     loaded_params = loader.load(params_shape)
-    at.check_pytree_equality(expected=params_shape, got=loaded_params, check_shapes=True, check_dtypes=True)
+    
+    # Try to validate, but handle missing parameters gracefully
+    try:
+        at.check_pytree_equality(expected=params_shape, got=loaded_params, check_shapes=True, check_dtypes=True)
+    except ValueError as e:
+        # If validation fails due to missing parameters, merge them
+        if "different structure" in str(e) or "numbers of children do not match" in str(e):
+            logging.warning(
+                "Loaded weights have different structure than model. Merging missing parameters from random initialization."
+            )
+            # Merge loaded params with params_shape, keeping missing params from params_shape
+            loaded_params = _merge_missing_params_from_shape(loaded_params, params_shape)
+        else:
+            raise
 
     # Remove jax.ShapeDtypeStruct from the loaded params. This makes sure that only the loaded params are returned.
     return traverse_util.unflatten_dict(
         {k: v for k, v in traverse_util.flatten_dict(loaded_params).items() if not isinstance(v, jax.ShapeDtypeStruct)}
     )
+
+
+def _merge_missing_params_from_shape(loaded_params: at.Params, params_shape: at.Params) -> at.Params:
+    """Merge loaded parameters with shape parameters, keeping missing parameters from shape.
+    
+    This allows new parameters (like image_out_proj) to keep their random initialization
+    while loaded parameters are used where available.
+    
+    Note: params_shape may contain ShapeDtypeStruct values from jax.eval_shape, which is fine
+    because the actual parameter values will be generated during model initialization.
+    """
+    flat_loaded = traverse_util.flatten_dict(loaded_params, sep="/")
+    flat_shape = traverse_util.flatten_dict(params_shape, sep="/")
+    
+    # Start with loaded params
+    result = flat_loaded.copy()
+    
+    # Add any missing parameters from shape (randomly initialized)
+    # These may be ShapeDtypeStruct, which is fine - actual values will be generated during init
+    for key, value in flat_shape.items():
+        if key not in result:
+            result[key] = value
+            logging.info(f"Keeping randomly initialized parameter: {key}")
+    
+    return traverse_util.unflatten_dict(result, sep="/")
 
 
 @at.typecheck
@@ -138,24 +180,24 @@ def train_step(
     config: _config.TrainConfig,
     rng: at.KeyArrayLike,
     state: training_utils.TrainState,
-    batch: tuple[_model.Observation, _model.Actions],
+    batch: tuple[_model.Observation, _model.Actions, at.Array | None],
 ) -> tuple[training_utils.TrainState, dict[str, at.Array]]:
     model = nnx.merge(state.model_def, state.params)
     model.train()
 
     @at.typecheck
     def loss_fn(
-        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions
+        model: _model.BaseModel, rng: at.KeyArrayLike, observation: _model.Observation, actions: _model.Actions, img_seg: at.Array | None = None
     ):
-        chunked_loss = model.compute_loss(rng, observation, actions, train=True)
+        chunked_loss = model.compute_loss(rng, observation, actions, img_seg, train=True)
         return jnp.mean(chunked_loss)
 
     train_rng = jax.random.fold_in(rng, state.step)
-    observation, actions = batch
+    observation, actions, img_seg = batch
 
     # Filter out frozen params.
     diff_state = nnx.DiffState(0, config.trainable_filter)
-    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions)
+    loss, grads = nnx.value_and_grad(loss_fn, argnums=diff_state)(model, train_rng, observation, actions, img_seg)
 
     params = state.params.filter(config.trainable_filter)
     updates, new_opt_state = state.tx.update(grads, state.opt_state, params)
@@ -192,6 +234,8 @@ def train_step(
 
 
 def main(config: _config.TrainConfig):
+    import os
+    os.environ["WANDB_MODE"] = "offline"
     init_logging()
     logging.info(f"Running on: {platform.node()}")
 

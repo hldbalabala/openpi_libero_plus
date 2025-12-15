@@ -304,12 +304,26 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
                         "observation/image": "image",
                         "observation/wrist_image": "wrist_image",
                         "observation/state": "state",
+                        "img_seg": "img_seg",
                         "actions": "actions",
                         "prompt": "prompt",
                     }
                 )
             ]
         )
+        # repack_transform = _transforms.Group(
+        #     inputs=[
+        #         _transforms.RepackTransform(
+        #             {
+        #                 "observation/image": "observation.images.front",
+        #                 "observation/wrist_image": "observation.images.wrist",
+        #                 "observation/state": "observation.state",
+        #                 "actions": "actions",
+        #                 "prompt": "prompt",
+        #             }
+        #         )
+        #     ]
+        # )
 
         # The data transforms are applied to the data coming from the dataset *and* during inference.
         # Below, we define the transforms for data going into the model (``inputs``) and the transforms
@@ -497,7 +511,7 @@ class TrainConfig:
     batch_size: int = 32
     # Number of workers to use for the data loader. Increasing this number will speed up data loading but
     # will increase memory and CPU usage.
-    num_workers: int = 2
+    num_workers: int = 20
     # Number of train steps (batches) to run.
     num_train_steps: int = 30_000
 
@@ -667,6 +681,48 @@ _CONFIGS = [
         num_train_steps=30_000,
     ),
     TrainConfig(
+        name="only_fork",
+        model=pi0_config.Pi0Config(pi05=True),
+        # model=pi0.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
+        data=LeRobotAlohaDataConfig(
+            # repo_id="physical-intelligence/aloha_pen_uncap_diverse",
+            repo_id = "only_fork_1017",
+            assets=AssetsConfig(
+                assets_dir="/home/ubuntu/Desktop/hld/openpi/assets/only_fork",
+                asset_id="only_fork_1017",
+            ),
+            default_prompt="Put the fork in the box.",
+            adapt_to_pi=False,
+            repack_transforms=_transforms.Group(
+                inputs=[
+                    _transforms.RepackTransform(
+                        {
+                            "images": {
+                                "cam_high": "observation.images.cam_high",
+                                "cam_left_wrist": "observation.images.cam_left_wrist",
+                                "cam_right_wrist": "observation.images.cam_right_wrist",
+                            },
+                            "state": "observation.state",
+                            "actions": "action",
+                            "prompt": "prompt"
+                        }
+                    )
+                ]
+            ),
+            base_config=DataConfig(
+                # local_files_only=False,  # Set to True for local-only datasets.
+                prompt_from_task=True
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/ubuntu/Desktop/hld/ckpt/pi05_base/params"),
+        num_train_steps=20_0000,
+        batch_size=1,
+        wandb_enabled=True,
+        checkpoint_base_dir='/home/ubuntu/Desktop/hld/ckpt/only_fork_1017',
+        fsdp_devices=1
+    ),
+
+    TrainConfig(
         name="pi0_libero_low_mem_finetune",
         # Here is an example of loading a pi0 model for LoRA fine-tuning.
         model=pi0_config.Pi0Config(paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"),
@@ -748,9 +804,41 @@ _CONFIGS = [
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
-        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_libero"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+
+    TrainConfig(
+        name="pi05_libero_plus",
+        # model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False,paligemma_variant="gemma_2b_lora"),
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotLiberoDataConfig(
+            repo_id="libero_replay_obj",
+            assets=AssetsConfig(
+                assets_dir="/home/ubuntu/Desktop/hld/openpi/checkpoints/155000/assets",
+                asset_id="libero_plus_lerobot",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        batch_size=8,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        #weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_libero/params"),
+        #weight_loader=weight_loaders.CheckpointWeightLoader("/home/ubuntu/Desktop/hld/openpi/checkpoints/libero_plus_95000/95000/params"),
+        weight_loader=weight_loaders.CheckpointWeightLoader("/home/ubuntu/Desktop/hld/openpi/checkpoints/155000/params"),
+        #weight_loader=weight_loaders.CheckpointWeightLoader("/home/ubuntu/Desktop/hld/openpi/checkpoints/replay_move/165000/params"),
+        #checkpoint_base_dir='/home/ubuntu/Desktop/hld/openpi/checkpoints/libero_plus_95000/95000/params',
+        num_train_steps=500_0000,
+        # freeze_filter=pi0_config.Pi0Config(
+        #     pi05=True, action_horizon=10, discrete_state_input=False,paligemma_variant="gemma_2b_lora"
+        # ).get_freeze_filter(),
     ),
     #
     # Fine-tuning Aloha configs.

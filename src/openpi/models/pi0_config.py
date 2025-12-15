@@ -20,6 +20,8 @@ class Pi0Config(_model.BaseModelConfig):
     dtype: str = "bfloat16"
     paligemma_variant: _gemma.Variant = "gemma_2b"
     action_expert_variant: _gemma.Variant = "gemma_300m"
+    action_loss_weight: float = 0.8
+    image_denoise_loss_weight: float = 1.0 - action_loss_weight
 
     # Set the model specific defaults.
     action_dim: int = 32
@@ -37,6 +39,10 @@ class Pi0Config(_model.BaseModelConfig):
             object.__setattr__(self, "max_token_len", 200 if self.pi05 else 48)
         if self.discrete_state_input is None:
             object.__setattr__(self, "discrete_state_input", self.pi05)
+        if self.action_loss_weight < 0 or self.image_denoise_loss_weight < 0:
+            raise ValueError("loss weights must be non-negative")
+        if self.action_loss_weight + self.image_denoise_loss_weight == 0:
+            raise ValueError("at least one loss weight must be positive")
 
     @property
     @override

@@ -15,6 +15,7 @@ import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.transforms as transforms
 
+# uv run scripts/compute_norm_stats.py --config-name cleantable_debug
 
 class RemoveStrings(transforms.DataTransformFn):
     def __call__(self, x: dict) -> dict:

@@ -7,9 +7,12 @@ import logging
 from typing import Protocol
 
 from etils import epath
+import flax.nnx as nnx
+import flax.traverse_util
 import jax
 import orbax.checkpoint as ocp
 import orbax.checkpoint.future as future
+import orbax.checkpoint.transform_utils as transform_utils
 
 from openpi.shared import array_typing as at
 import openpi.shared.normalize as _normalize
@@ -97,14 +100,103 @@ def restore_state(
     with at.disable_typechecking():
         # Split params that can be used for inference into a separate item.
         train_state, params = _split_params(state)
-        restored = checkpoint_manager.restore(
-            step,
-            items={
-                "train_state": train_state,
-                "params": {"params": params},
-            },
-        )
-    return _merge_params(restored["train_state"], restored["params"])
+        
+        # Convert params to pure dict if it's a NNX State
+        if isinstance(params, nnx.State):
+            params = params.to_pure_dict()
+        
+        # Try to restore, but handle missing parameters gracefully
+        try:
+            restored = checkpoint_manager.restore(
+                step,
+                items={
+                    "train_state": train_state,
+                    "params": {"params": params},
+                },
+            )
+            restored_params = restored["params"]["params"]
+            # Convert to pure dict if it's a NNX State
+            if isinstance(restored_params, nnx.State):
+                restored_params = restored_params.to_pure_dict()
+        except ValueError as e:
+            # If restore fails due to structure mismatch, try partial restore
+            if "tree structures do not match" in str(e) or "User-provided restore item" in str(e):
+                logging.warning(
+                    "Checkpoint structure mismatch detected. Attempting partial restore for missing parameters."
+                )
+                # Get the checkpoint path
+                step_to_restore = step if step is not None else checkpoint_manager.latest_step()
+                checkpoint_path = checkpoint_manager.directory / str(step_to_restore) / "params"
+                
+                # Try to restore only the matching parameters
+                with ocp.PyTreeCheckpointer() as ckptr:
+                    try:
+                        # Get metadata to understand the checkpoint structure
+                        checkpoint_metadata = ckptr.metadata(checkpoint_path)
+                        checkpoint_params_shape = checkpoint_metadata.get("params", {})
+                        
+                        # Restore the checkpoint params (this will only restore what's in the checkpoint)
+                        checkpoint_params_restored = ckptr.restore(
+                            checkpoint_path,
+                            ocp.args.PyTreeRestore(
+                                item={"params": checkpoint_params_shape},
+                            ),
+                        )["params"]
+                        
+                        # Convert NNX State to pure dict if needed
+                        if isinstance(checkpoint_params_restored, nnx.State):
+                            checkpoint_params_restored = checkpoint_params_restored.to_pure_dict()
+                        
+                        # Merge checkpoint params with original params
+                        # This will use checkpoint values where they exist, and keep original (randomly initialized) values for missing params
+                        restored_params = _merge_checkpoint_params(params, checkpoint_params_restored)
+                        logging.info("Successfully performed partial restore, keeping randomly initialized parameters for new layers.")
+                    except Exception as restore_error:
+                        logging.warning(
+                            f"Failed to perform partial restore: {restore_error}. Using random initialization for new parameters."
+                        )
+                        restored_params = params
+                
+                # Still need to restore train_state
+                # Try to restore train_state separately, handling potential structure mismatches
+                step_to_restore = step if step is not None else checkpoint_manager.latest_step()
+                restored_train_state = train_state
+                try:
+                    restored_train_state_dict = checkpoint_manager.restore(
+                        step,
+                        items={
+                            "train_state": train_state,
+                        },
+                    )["train_state"]
+                    # Check if step is a real value or ShapeDtypeStruct
+                    if hasattr(restored_train_state_dict, "step"):
+                        step_value = restored_train_state_dict.step
+                        # If step is ShapeDtypeStruct, replace it with the actual step number
+                        if isinstance(step_value, jax.ShapeDtypeStruct):
+                            if step_to_restore is not None:
+                                restored_train_state = dataclasses.replace(
+                                    restored_train_state_dict,
+                                    step=step_to_restore
+                                )
+                            else:
+                                restored_train_state = restored_train_state_dict
+                        else:
+                            restored_train_state = restored_train_state_dict
+                    else:
+                        restored_train_state = restored_train_state_dict
+                except Exception as train_state_error:
+                    # If train_state restore fails, at least set the step from checkpoint path
+                    logging.warning(f"Failed to restore train_state: {train_state_error}. Using step from checkpoint path.")
+                    if step_to_restore is not None:
+                        restored_train_state = dataclasses.replace(train_state, step=step_to_restore)
+                    else:
+                        restored_train_state = train_state
+                
+                restored = {"train_state": restored_train_state, "params": {"params": restored_params}}
+            else:
+                raise
+        
+        return _merge_params(restored["train_state"], restored["params"])
 
 
 def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _normalize.NormStats] | None:
@@ -157,3 +249,38 @@ def _merge_params(train_state: training_utils.TrainState, params: dict[str, at.P
     if train_state.params:
         return dataclasses.replace(train_state, ema_params=params["params"])
     return dataclasses.replace(train_state, params=params["params"])
+
+
+def _merge_checkpoint_params(original_params: at.Params, checkpoint_params: at.Params) -> at.Params:
+    """Merge checkpoint parameters with original parameters.
+    
+    This allows new parameters (like image_out_proj) to keep their random initialization
+    while restored parameters are loaded from checkpoint.
+    
+    Args:
+        original_params: The current model parameters (with randomly initialized new layers)
+        checkpoint_params: The parameters restored from checkpoint (may be missing some keys)
+    
+    Returns:
+        Merged parameters: checkpoint values where available, original values for missing keys
+    """
+    flat_original = flax.traverse_util.flatten_dict(original_params, sep="/")
+    flat_checkpoint = flax.traverse_util.flatten_dict(checkpoint_params, sep="/")
+    
+    # Start with original params (randomly initialized)
+    result = flat_original.copy()
+    
+    # Overwrite with checkpoint params where they exist
+    for key, value in flat_checkpoint.items():
+        if key in result:
+            result[key] = value
+        else:
+            # This shouldn't happen if checkpoint is a subset, but log it just in case
+            logging.debug(f"Checkpoint has parameter {key} not in original model, skipping.")
+    
+    # Log which parameters are being kept from random initialization
+    missing_keys = set(flat_original.keys()) - set(flat_checkpoint.keys())
+    if missing_keys:
+        logging.info(f"Keeping randomly initialized parameters for: {sorted(missing_keys)}")
+    
+    return flax.traverse_util.unflatten_dict(result, sep="/")

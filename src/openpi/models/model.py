@@ -234,9 +234,14 @@ class BaseModelConfig(abc.ABC):
         """Create a model with the given parameters."""
         model = nnx.eval_shape(self.create, jax.random.key(0))
         graphdef, state = nnx.split(model)
+        expected_state = state.to_pure_dict()
         if remove_extra_params:
-            params = ocp.transform_utils.intersect_trees(state.to_pure_dict(), params)
-        at.check_pytree_equality(expected=state.to_pure_dict(), got=params, check_shapes=True, check_dtypes=False)
+            params = ocp.transform_utils.intersect_trees(expected_state, params)
+
+        # Merge any missing parameters (e.g., newly added layers such as image_out_proj) with the randomly initialized ones.
+        params = _merge_missing_params(expected_state, params)
+
+        at.check_pytree_equality(expected=expected_state, got=params, check_shapes=True, check_dtypes=False)
         state.replace_by_pure_dict(params)
         return nnx.merge(graphdef, state)
 
@@ -281,6 +286,18 @@ class BaseModel(nnx.Module, abc.ABC):
 
     @abc.abstractmethod
     def sample_actions(self, rng: at.KeyArrayLike, observation: Observation, **kwargs) -> Actions: ...
+
+
+def _merge_missing_params(expected_state: at.Params, loaded_params: at.Params) -> at.Params:
+    """Fill in missing parameters from the randomly initialized state."""
+    flat_expected = traverse_util.flatten_dict(expected_state, sep="/")
+    flat_loaded = traverse_util.flatten_dict(loaded_params, sep="/")
+
+    for key, value in flat_expected.items():
+        if key not in flat_loaded:
+            flat_loaded[key] = value
+
+    return traverse_util.unflatten_dict(flat_loaded, sep="/")
 
 
 def restore_params(

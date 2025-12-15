@@ -20,21 +20,19 @@ Running this conversion script will take approximately 30 minutes.
 
 import shutil
 
-from lerobot.common.datasets.lerobot_dataset import HF_LEROBOT_HOME
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import HF_LEROBOT_HOME
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 import tensorflow_datasets as tfds
-import tyro
+#import tyro
 
-REPO_NAME = "your_hf_username/libero"  # Name of the output dataset, also used for the Hugging Face Hub
+REPO_NAME = "libero_plus_pi"  # Name of the output dataset, also used for the Hugging Face Hub
 RAW_DATASET_NAMES = [
-    "libero_10_no_noops",
-    "libero_goal_no_noops",
-    "libero_object_no_noops",
-    "libero_spatial_no_noops",
+    "libero_mix"
 ]  # For simplicity we will combine multiple Libero datasets into one training dataset
 
 
-def main(data_dir: str, *, push_to_hub: bool = False):
+def main(push_to_hub: bool = False):
+    data_dir = "/home/ubuntu/Desktop/hf_download/libero_plus_rlds"
     # Clean up any existing dataset in the output directory
     output_path = HF_LEROBOT_HOME / REPO_NAME
     if output_path.exists():
@@ -54,6 +52,11 @@ def main(data_dir: str, *, push_to_hub: bool = False):
                 "names": ["height", "width", "channel"],
             },
             "wrist_image": {
+                "dtype": "image",
+                "shape": (256, 256, 3),
+                "names": ["height", "width", "channel"],
+            },
+            "img_seg": {
                 "dtype": "image",
                 "shape": (256, 256, 3),
                 "names": ["height", "width", "channel"],
@@ -78,6 +81,7 @@ def main(data_dir: str, *, push_to_hub: bool = False):
     for raw_dataset_name in RAW_DATASET_NAMES:
         raw_dataset = tfds.load(raw_dataset_name, data_dir=data_dir, split="train")
         for episode in raw_dataset:
+            print(episode)
             for step in episode["steps"].as_numpy_iterator():
                 dataset.add_frame(
                     {
@@ -95,10 +99,10 @@ def main(data_dir: str, *, push_to_hub: bool = False):
         dataset.push_to_hub(
             tags=["libero", "panda", "rlds"],
             private=False,
-            push_videos=True,
+            push_videos=False,
             license="apache-2.0",
         )
 
 
 if __name__ == "__main__":
-    tyro.cli(main)
+    main()

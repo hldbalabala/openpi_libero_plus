@@ -56,6 +56,9 @@ class TransformedDataset(Dataset[T_co]):
         self._transform = _transforms.compose(transforms)
 
     def __getitem__(self, index: SupportsIndex) -> T_co:
+        #
+        # print("--->[data_loader.py: TransformedDataset] index: ", index)
+        #print("--->[data_loader.py: TransformedDataset] transform: ", self._transform)
         return self._transform(self._dataset[index])
 
     def __len__(self) -> int:
@@ -143,11 +146,14 @@ def create_torch_dataset(
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
+        video_backend="pyav",
     )
+    print("--->[data_loader.py: create_torch_dataset]  ", dataset)
 
     if data_config.prompt_from_task:
         dataset = TransformedDataset(dataset, [_transforms.PromptFromLeRobotTask(dataset_meta.tasks)])
 
+    print("--->[data_loader.py: create_torch_dataset]  ", dataset.__len__())
     return dataset
 
 
@@ -228,7 +234,7 @@ def create_data_loader(
     num_batches: int | None = None,
     skip_norm_stats: bool = False,
     framework: Literal["jax", "pytorch"] = "jax",
-) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
+) -> DataLoader[tuple[_model.Observation, _model.Actions, jnp.ndarray | None]]:
     """Create a data loader for training.
 
     Args:
@@ -281,7 +287,7 @@ def create_torch_data_loader(
     num_workers: int = 0,
     seed: int = 0,
     framework: str = "jax",
-) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
+) -> DataLoader[tuple[_model.Observation, _model.Actions, jnp.ndarray | None]]:
     """Create a data loader for training.
 
     Args:
@@ -347,7 +353,7 @@ def create_rlds_data_loader(
     shuffle: bool = False,
     num_batches: int | None = None,
     framework: str = "jax",
-) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
+) -> DataLoader[tuple[_model.Observation, _model.Actions, jnp.ndarray | None]]:
     """Create an RLDS data loader for training.
 
     Note: This data loader requires some extra dependencies -- see examples/droid/README_train.md
@@ -537,4 +543,24 @@ class DataLoaderImpl(DataLoader):
 
     def __iter__(self):
         for batch in self._data_loader:
-            yield _model.Observation.from_dict(batch), batch["actions"]
+            observation = _model.Observation.from_dict(batch)
+            actions = batch["actions"]
+            # Extract img_seg if present, otherwise use None
+            img_seg = None
+            if "img_seg" in batch:
+                img_seg_data = batch["img_seg"]
+                # Convert img_seg to the correct format if needed
+                # img_seg should be (b, h, w, c) format
+                if hasattr(img_seg_data, "dtype"):
+                    if img_seg_data.dtype == np.uint8:
+                        img_seg_data = img_seg_data.astype(np.float32) / 255.0 * 2.0 - 1.0
+                    elif hasattr(img_seg_data, "dtype") and img_seg_data.dtype == torch.uint8:
+                        img_seg_data = img_seg_data.to(torch.float32)
+                        if len(img_seg_data.shape) == 4 and img_seg_data.shape[1] == 3:  # (b, c, h, w)
+                            img_seg_data = img_seg_data.permute(0, 2, 3, 1)  # (b, h, w, c)
+                        img_seg_data = img_seg_data / 255.0 * 2.0 - 1.0
+                    # Convert to JAX array if it's a numpy array
+                    if isinstance(img_seg_data, np.ndarray):
+                        img_seg_data = jnp.asarray(img_seg_data)
+                img_seg = img_seg_data
+            yield observation, actions, img_seg
